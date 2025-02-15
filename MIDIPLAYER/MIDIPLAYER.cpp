@@ -36,14 +36,14 @@ typedef NTSTATUS(NTAPI* RtlGetVersionPtr)(POSVERSIONINFOEXW);
 bool IsWindows10OrGreater() {
     HMODULE hModule = LoadLibrary(L"ntdll.dll");
     if (hModule == NULL) {
-        SetColor(FOREGROUND_RED);
+        SetColor(12);
         std::cerr << "Failed to load ntdll.dll" << std::endl;
         return false;
     }
 
     RtlGetVersionPtr pRtlGetVersion = (RtlGetVersionPtr)GetProcAddress(hModule, "RtlGetVersion");
     if (pRtlGetVersion == NULL) {
-        SetColor(FOREGROUND_RED);
+        SetColor(12);
         std::cerr << "Failed to get RtlGetVersion function address" << std::endl;
         FreeLibrary(hModule);
         return false;
@@ -56,7 +56,7 @@ bool IsWindows10OrGreater() {
 
     NTSTATUS status = pRtlGetVersion(&versionInfo);
     if (status != 0) {
-        SetColor(FOREGROUND_RED);
+        SetColor(12);
         std::cerr << "Failed to get version info" << std::endl;
         FreeLibrary(hModule);
         return false;
@@ -103,7 +103,7 @@ std::string openMidiFileDialog() {
 void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
     MidiFile midiFile;
     if (!midiFile.read(filePath)) {
-        SetColor(FOREGROUND_RED);
+        SetColor(12);
         std::cerr << "Error: Failed to load MIDI file.\n";
         return;
     }
@@ -217,7 +217,7 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
         }
     }
 
-    SetColor(9);
+    SetColor(13);
     std::cout << "[*] MIDI playback finished.\n";
     isPlaybackFinished = true;
     cv.notify_all();
@@ -231,11 +231,11 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
 int main() {
     try {
         if (IsWindows10OrGreater()) {
-            SetColor(10);
-            std::cout << "[+] Loading Midi Player" << std::endl;
+            SetColor(14);
+            std::cout << "[*] Loading Midi Player" << std::endl;
         }
         else {
-            SetColor(FOREGROUND_RED);
+            SetColor(12);
             std::cout << "[!] This program requires Windows 10 or greater." << std::endl;
             SetColor(15);
             std::cout << "Press Enter to exit..." << std::endl;
@@ -245,12 +245,12 @@ int main() {
 
         RtMidiOut midiOut;
         if (midiOut.getPortCount() == 0) {
-            SetColor(FOREGROUND_RED);
+            SetColor(12);
             std::cerr << "[!] No available MIDI output ports.\n";
             return 1;
         }
 
-        SetColor(9);
+        SetColor(10);
         std::cout << "[*] Available MIDI Ports:\n";
         for (unsigned int i = 0; i < midiOut.getPortCount(); i++) {
             std::cout << i << ": " << midiOut.getPortName(i) << "\n";
@@ -265,7 +265,7 @@ int main() {
             midiOut.openPort(portNumber);
         }
         catch (RtMidiError& error) {
-            SetColor(FOREGROUND_RED);
+            SetColor(12);
             std::cerr << "[!] Failed to open MIDI port: " << error.getMessage() << "\n";
             return 1;
         }
@@ -278,7 +278,7 @@ int main() {
 
             std::string filePath = openMidiFileDialog();
             if (filePath.empty()) {
-                SetColor(FOREGROUND_RED);
+                SetColor(12);
                 std::cerr << "[!] No MIDI file selected.\n";
                 break;
             }
@@ -290,7 +290,7 @@ int main() {
                 loadCv.wait(lock, [] { return isMidiLoaded.load(); });
             }
             
-            SetColor(9);
+            SetColor(11);
             std::cout << "\nCommands (pause/resume/stop): ";
 
             while (!isPlaybackFinished.load()) {
@@ -302,23 +302,31 @@ int main() {
                         cv.notify_all();
                         SetColor(10);
                         std::cout << "[*] Paused\n";
+                        SetColor(11);
+                        std::cout << "Commands (pause/resume/stop): ";
                     }
                     else if (command == "resume") {
                         isPaused = false;
                         cv.notify_all();
                         SetColor(10);
                         std::cout << "[*] Resumed\n";
+                        SetColor(11);
+                        std::cout << "Commands (pause/resume/stop): ";
                     }
                     else if (command == "stop") {
                         isStopped = true;
                         cv.notify_all();
                         SetColor(10);
                         std::cout << "[*] Stopping playback...\n";
+                        SetColor(11);
+                        std::cout << "Commands (pause/resume/stop): ";
                         break;
                     }
                     else {
-                        SetColor(FOREGROUND_RED);
+                        SetColor(12);
                         std::cout << "[!] Invalid command. Use [pause/resume/stop]\n";
+                        SetColor(11);
+                        std::cout << "Commands (pause/resume/stop): ";
                     }
                 }
                 else {
@@ -327,7 +335,7 @@ int main() {
             }
 
             playbackThread.join();
-            SetColor(9);
+            SetColor(13);
             std::cout << "\n[*] Would you like to play another MIDI file? (y/n): ";
             std::string answer;
             std::getline(std::cin, answer);
@@ -340,7 +348,7 @@ int main() {
         }
     }
     catch (RtMidiError) {
-        SetColor(FOREGROUND_RED);
+        SetColor(12);
         std::cerr << "[!] An error occurred. Please try again later." << "\n";
         SetColor(15);
         std::cout << "Press Enter to exit..." << std::endl;
