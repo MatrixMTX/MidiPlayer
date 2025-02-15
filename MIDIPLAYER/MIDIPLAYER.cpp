@@ -24,6 +24,24 @@ std::mutex mtx;
 std::atomic<int> globalNoteCount(0);
 std::atomic<double> currentPlaybackTime(0.0);
 
+bool IsWindows10OrGreater() {
+    OSVERSIONINFOEXW osvi = {};
+    osvi.dwOSVersionInfoSize = sizeof(osvi);
+    osvi.dwMajorVersion = 10;
+    osvi.dwMinorVersion = 0;
+
+    DWORDLONG conditionMask = 0;
+    VER_SET_CONDITION(conditionMask, VER_MAJORVERSION, VER_GREATER_EQUAL);
+    VER_SET_CONDITION(conditionMask, VER_MINORVERSION, VER_GREATER_EQUAL);
+
+    return VerifyVersionInfoW(&osvi, VER_MAJORVERSION | VER_MINORVERSION, conditionMask) != FALSE;
+}
+
+void SetColor(WORD color) {
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    SetConsoleTextAttribute(hConsole, color);
+}
+
 std::wstring to_wstring(const std::string& str) {
     int len = MultiByteToWideChar(CP_ACP, 0, str.c_str(), -1, NULL, 0);
     std::wstring wstr(len, 0);
@@ -57,6 +75,7 @@ std::string openMidiFileDialog() {
 void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
     MidiFile midiFile;
     if (!midiFile.read(filePath)) {
+        SetColor(FOREGROUND_RED);
         std::cerr << "Error: Failed to load MIDI file.\n";
         return;
     }
@@ -83,24 +102,25 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
     }
     loadCv.notify_one();
 
-    std::cout << "Playing MIDI: " << filePath << std::endl;
+    SetColor(FOREGROUND_GREEN);
+    std::cout << "[+] Playing MIDI: " << filePath << std::endl;
 
     auto playbackStart = std::chrono::steady_clock::now();
     std::chrono::duration<double> pauseDuration = std::chrono::duration<double>::zero();
     std::chrono::steady_clock::time_point pauseStart{};
 
-    int noteCount = 0;      // 기존 로컬 카운터 (지우지 않고 남겨둠)
+    int noteCount = 0;
     double lastEventTime = 0.0;
 
-    // 신규: 1초마다 콘솔 타이틀 업데이트하는 스레드
+    // Thread that updates console title every second
     std::thread titleUpdater([totalDuration]() {
         while (!isPlaybackFinished) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            int notes = globalNoteCount.exchange(0); // 지난 1초간의 Note-on 수 읽고 0으로 초기화
+            int notes = globalNoteCount.exchange(0);
             double cpTime = currentPlaybackTime.load();
             double progressPercent = (totalDuration > 0.0) ? (cpTime / totalDuration * 100.0) : 0.0;
             wchar_t title[256];
-            swprintf_s(title, 256, L"현재 진행도: %.2f%% | NPS: %d", progressPercent, notes);
+            swprintf_s(title, 256, L"Progress: %.2f%% | NPS: %d", progressPercent, notes);
             SetConsoleTitleW(title);
         }
         });
@@ -133,16 +153,16 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
             }
         }
 
-        // 재생 시간 업데이트 (타이틀 업데이트용)
+        // Update playback time (for title update)
         currentPlaybackTime.store(eventTime);
 
-        // [기존 제목 업데이트 코드 - 1초마다 업데이트되지 않으므로 주석 처리]
+        // [Existing title update code - commented out as it doesn't update every second]
         /*
         if (totalDuration > 0.0) {
             double progressPercent = (event->seconds / totalDuration) * 100.0;
             double nps = (eventTime - lastEventTime > 0) ? noteCount / (eventTime - lastEventTime) : 0.0;
             wchar_t title[256];
-            swprintf_s(title, 256, L\"현재 진행도: %.2f%% | NPS: %.2f\", progressPercent, nps);
+            swprintf_s(title, 256, L\"Progress: %.2f%% | NPS: %.2f\", progressPercent, nps);
             SetConsoleTitleW(title);
             lastEventTime = eventTime;
             noteCount = 0;
@@ -152,12 +172,11 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
         if (event->isMeta() && (*event)[0] == 0x51) {
             int microsecondsPerQuarter = ((*event)[3] << 16) | ((*event)[4] << 8) | (*event)[5];
             double newBpm = 60000000.0 / microsecondsPerQuarter;
-            std::cout << "⏱️ Tempo changed: " << newBpm << " BPM\n";
         }
 
         if (event->isNoteOn()) {
-            noteCount++;           // 기존 로컬 카운터
-            globalNoteCount++;     // 신규 글로벌 카운터 (타이틀 업데이트용)
+            noteCount++;    
+            globalNoteCount++;   
         }
 
         if (event->isNoteOn() || event->isNoteOff()) {
@@ -170,11 +189,11 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
         }
     }
 
-    std::cout << "MIDI playback finished.\n";
+    SetColor(FOREGROUND_BLUE);
+    std::cout << "[*] MIDI playback finished.\n";
     isPlaybackFinished = true;
     cv.notify_all();
 
-    // 타이틀 업데이트 스레드 종료 대기
     if (titleUpdater.joinable()) {
         titleUpdater.join();
     }
@@ -183,12 +202,27 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
 
 int main() {
     try {
+        if (IsWindows10OrGreater()) {
+            SetColor(FOREGROUND_GREEN);
+            std::cout << "[+] Loading Midi Player" << std::endl;
+        }
+        else {
+            SetColor(FOREGROUND_RED);
+            std::cout << "[!] This program requires Windows 10 or greater." << std::endl;
+            SetColor(FOREGROUND_INTENSITY);
+            std::cout << "Press Enter to exit..." << std::endl;
+            std::cin.get();
+            return 0;
+        }
+
         RtMidiOut midiOut;
         if (midiOut.getPortCount() == 0) {
-            std::cerr << "No available MIDI output ports.\n";
+            SetColor(FOREGROUND_RED);
+            std::cerr << "[!] No available MIDI output ports.\n";
             return 1;
         }
 
+        SetColor(FOREGROUND_BLUE);
         std::cout << "Available MIDI Ports:\n";
         for (unsigned int i = 0; i < midiOut.getPortCount(); i++) {
             std::cout << i << ": " << midiOut.getPortName(i) << "\n";
@@ -197,19 +231,18 @@ int main() {
         int portNumber;
         std::cout << "Select a MIDI port: ";
         std::cin >> portNumber;
-        std::cin.ignore(); // 남은 개행 문자 제거
+        std::cin.ignore();
 
         try {
             midiOut.openPort(portNumber);
         }
         catch (RtMidiError& error) {
-            std::cerr << "Failed to open MIDI port: " << error.getMessage() << "\n";
+            SetColor(FOREGROUND_RED);
+            std::cerr << "[!] Failed to open MIDI port: " << error.getMessage() << "\n";
             return 1;
         }
 
-        // 파일 재생 반복 루프
         while (true) {
-            // 새 미디 재생을 위해 플래그 초기화
             isPaused = false;
             isStopped = false;
             isMidiLoaded = false;
@@ -217,21 +250,21 @@ int main() {
 
             std::string filePath = openMidiFileDialog();
             if (filePath.empty()) {
-                std::cerr << "No MIDI file selected.\n";
+                SetColor(FOREGROUND_RED);
+                std::cerr << "[!] No MIDI file selected.\n";
                 break;
             }
 
             std::thread playbackThread(playMidiFile, filePath, std::ref(midiOut));
 
-            // 미디가 로드될 때까지 기다림
             {
                 std::unique_lock<std::mutex> lock(mtx);
                 loadCv.wait(lock, [] { return isMidiLoaded.load(); });
             }
+            
+            SetColor(FOREGROUND_BLUE);
+            std::cout << "\nCommands (pause/resume/stop): ";
 
-            std::cout << "\nCommands: [pause/resume/stop]\n";
-
-            // 재생이 끝날 때까지 명령어 입력 처리 (_kbhit()로 non-blocking 체크)
             while (!isPlaybackFinished.load()) {
                 if (_kbhit()) {
                     std::string command;
@@ -239,21 +272,25 @@ int main() {
                     if (command == "pause") {
                         isPaused = true;
                         cv.notify_all();
-                        std::cout << "Paused\n";
+                        SetColor(FOREGROUND_GREEN);
+                        std::cout << "[*] Paused\n";
                     }
                     else if (command == "resume") {
                         isPaused = false;
                         cv.notify_all();
-                        std::cout << "Resumed\n";
+                        SetColor(FOREGROUND_GREEN);
+                        std::cout << "[*] Resumed\n";
                     }
                     else if (command == "stop") {
                         isStopped = true;
                         cv.notify_all();
-                        std::cout << "Stopping playback...\n";
+                        SetColor(FOREGROUND_GREEN);
+                        std::cout << "[*] Stopping playback...\n";
                         break;
                     }
                     else {
-                        std::cout << "Invalid command. Use [pause/resume/stop]\n";
+                        SetColor(FOREGROUND_RED);
+                        std::cout << "[!] Invalid command. Use [pause/resume/stop]\n";
                     }
                 }
                 else {
@@ -262,17 +299,24 @@ int main() {
             }
 
             playbackThread.join();
-
-            std::cout << "\n다른 MIDI 파일을 재생하시겠습니까? (y/n): ";
+            SetColor(FOREGROUND_BLUE);
+            std::cout << "\n[*] Would you like to play another MIDI file? (y/n): ";
             std::string answer;
             std::getline(std::cin, answer);
             if (answer != "y" && answer != "Y") {
+                SetColor(FOREGROUND_INTENSITY);
+                std::cout << "Press Enter to exit..." << std::endl;
+                std::cin.get();
                 break;
             }
         }
     }
     catch (RtMidiError& error) {
-        std::cerr << "MIDI error: " << error.getMessage() << "\n";
+        SetColor(FOREGROUND_RED);
+        std::cerr << "[!] An error occurred. Please try again later." << "\n";
+        SetColor(FOREGROUND_INTENSITY);
+        std::cout << "Press Enter to exit..." << std::endl;
+        std::cin.get();
         return 1;
     }
 
