@@ -1,4 +1,6 @@
-﻿#include <iostream>
+﻿#define _WIN32_WINNT 0x0A00
+
+#include <iostream>
 #include <vector>
 #include <thread>
 #include <chrono>
@@ -24,22 +26,48 @@ std::mutex mtx;
 std::atomic<int> globalNoteCount(0);
 std::atomic<double> currentPlaybackTime(0.0);
 
-bool IsWindows10OrGreater() {
-    OSVERSIONINFOEXW osvi = {};
-    osvi.dwOSVersionInfoSize = sizeof(osvi);
-    osvi.dwMajorVersion = 10;
-    osvi.dwMinorVersion = 0;
-
-    DWORDLONG conditionMask = 0;
-    VER_SET_CONDITION(conditionMask, VER_MAJORVERSION, VER_GREATER_EQUAL);
-    VER_SET_CONDITION(conditionMask, VER_MINORVERSION, VER_GREATER_EQUAL);
-
-    return VerifyVersionInfoW(&osvi, VER_MAJORVERSION | VER_MINORVERSION, conditionMask) != FALSE;
-}
-
 void SetColor(WORD color) {
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     SetConsoleTextAttribute(hConsole, color);
+}
+
+typedef NTSTATUS(NTAPI* RtlGetVersionPtr)(POSVERSIONINFOEXW);
+
+bool IsWindows10OrGreater() {
+    HMODULE hModule = LoadLibrary(L"ntdll.dll");
+    if (hModule == NULL) {
+        SetColor(FOREGROUND_RED);
+        std::cerr << "Failed to load ntdll.dll" << std::endl;
+        return false;
+    }
+
+    RtlGetVersionPtr pRtlGetVersion = (RtlGetVersionPtr)GetProcAddress(hModule, "RtlGetVersion");
+    if (pRtlGetVersion == NULL) {
+        SetColor(FOREGROUND_RED);
+        std::cerr << "Failed to get RtlGetVersion function address" << std::endl;
+        FreeLibrary(hModule);
+        return false;
+    }
+
+    OSVERSIONINFOEXW versionInfo;
+    ZeroMemory(&versionInfo, sizeof(versionInfo));
+
+    versionInfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXW);
+
+    NTSTATUS status = pRtlGetVersion(&versionInfo);
+    if (status != 0) {
+        SetColor(FOREGROUND_RED);
+        std::cerr << "Failed to get version info" << std::endl;
+        FreeLibrary(hModule);
+        return false;
+    }
+    if (versionInfo.dwMajorVersion >= 10) {
+        FreeLibrary(hModule);
+        return true;
+    }
+
+    FreeLibrary(hModule);
+    return false;
 }
 
 std::wstring to_wstring(const std::string& str) {
@@ -102,7 +130,7 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
     }
     loadCv.notify_one();
 
-    SetColor(FOREGROUND_GREEN);
+    SetColor(10);
     std::cout << "[+] Playing MIDI: " << filePath << std::endl;
 
     auto playbackStart = std::chrono::steady_clock::now();
@@ -189,7 +217,7 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
         }
     }
 
-    SetColor(FOREGROUND_BLUE);
+    SetColor(9);
     std::cout << "[*] MIDI playback finished.\n";
     isPlaybackFinished = true;
     cv.notify_all();
@@ -203,13 +231,13 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
 int main() {
     try {
         if (IsWindows10OrGreater()) {
-            SetColor(FOREGROUND_GREEN);
+            SetColor(10);
             std::cout << "[+] Loading Midi Player" << std::endl;
         }
         else {
             SetColor(FOREGROUND_RED);
             std::cout << "[!] This program requires Windows 10 or greater." << std::endl;
-            SetColor(FOREGROUND_INTENSITY);
+            SetColor(15);
             std::cout << "Press Enter to exit..." << std::endl;
             std::cin.get();
             return 0;
@@ -222,8 +250,8 @@ int main() {
             return 1;
         }
 
-        SetColor(FOREGROUND_BLUE);
-        std::cout << "Available MIDI Ports:\n";
+        SetColor(9);
+        std::cout << "[*] Available MIDI Ports:\n";
         for (unsigned int i = 0; i < midiOut.getPortCount(); i++) {
             std::cout << i << ": " << midiOut.getPortName(i) << "\n";
         }
@@ -262,7 +290,7 @@ int main() {
                 loadCv.wait(lock, [] { return isMidiLoaded.load(); });
             }
             
-            SetColor(FOREGROUND_BLUE);
+            SetColor(9);
             std::cout << "\nCommands (pause/resume/stop): ";
 
             while (!isPlaybackFinished.load()) {
@@ -272,19 +300,19 @@ int main() {
                     if (command == "pause") {
                         isPaused = true;
                         cv.notify_all();
-                        SetColor(FOREGROUND_GREEN);
+                        SetColor(10);
                         std::cout << "[*] Paused\n";
                     }
                     else if (command == "resume") {
                         isPaused = false;
                         cv.notify_all();
-                        SetColor(FOREGROUND_GREEN);
+                        SetColor(10);
                         std::cout << "[*] Resumed\n";
                     }
                     else if (command == "stop") {
                         isStopped = true;
                         cv.notify_all();
-                        SetColor(FOREGROUND_GREEN);
+                        SetColor(10);
                         std::cout << "[*] Stopping playback...\n";
                         break;
                     }
@@ -299,22 +327,22 @@ int main() {
             }
 
             playbackThread.join();
-            SetColor(FOREGROUND_BLUE);
+            SetColor(9);
             std::cout << "\n[*] Would you like to play another MIDI file? (y/n): ";
             std::string answer;
             std::getline(std::cin, answer);
             if (answer != "y" && answer != "Y") {
-                SetColor(FOREGROUND_INTENSITY);
+                SetColor(15);
                 std::cout << "Press Enter to exit..." << std::endl;
                 std::cin.get();
                 break;
             }
         }
     }
-    catch (RtMidiError& error) {
+    catch (RtMidiError) {
         SetColor(FOREGROUND_RED);
         std::cerr << "[!] An error occurred. Please try again later." << "\n";
-        SetColor(FOREGROUND_INTENSITY);
+        SetColor(15);
         std::cout << "Press Enter to exit..." << std::endl;
         std::cin.get();
         return 1;
