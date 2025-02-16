@@ -9,6 +9,7 @@
 #include <sstream>
 #include <algorithm>
 #include <atomic>
+#include <iomanip>
 #include <stdexcept>
 #include <cctype>
 #include <regex>
@@ -24,6 +25,7 @@
 
 using namespace smf;
 
+std::atomic<double> currentBpm(120.0);
 std::atomic<bool> isPaused(false);
 std::atomic<bool> isStopped(false);
 std::atomic<bool> isMidiLoaded(false);
@@ -95,14 +97,14 @@ bool IsWindows10OrGreater() {
     HMODULE hModule = LoadLibrary(L"ntdll.dll");
     if (hModule == NULL) {
         SetColor(12);
-        std::cerr << "Failed to load ntdll.dll" << std::endl;
+        std::cerr << "[!] Failed to load ntdll.dll" << std::endl;
         return false;
     }
 
     RtlGetVersionPtr pRtlGetVersion = (RtlGetVersionPtr)GetProcAddress(hModule, "RtlGetVersion");
     if (pRtlGetVersion == NULL) {
         SetColor(12);
-        std::cerr << "Failed to get RtlGetVersion function address" << std::endl;
+        std::cerr << "[!] Failed to get RtlGetVersion function address" << std::endl;
         FreeLibrary(hModule);
         return false;
     }
@@ -115,7 +117,7 @@ bool IsWindows10OrGreater() {
     NTSTATUS status = pRtlGetVersion(&versionInfo);
     if (status != 0) {
         SetColor(12);
-        std::cerr << "Failed to get version info" << std::endl;
+        std::cerr << "[!] Failed to get version info" << std::endl;
         FreeLibrary(hModule);
         return false;
     }
@@ -162,7 +164,7 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
     MidiFile midiFile;
     if (!midiFile.read(filePath)) {
         SetColor(12);
-        std::cerr << "Error: Failed to load MIDI file.\n";
+        std::cerr << "[!] Failed to load MIDI file.\n";
         return;
     }
 
@@ -181,6 +183,19 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
         });
 
     double totalDuration = allEvents.empty() ? 0.0 : allEvents.back()->seconds;
+    int totalNotes = 0;
+    int minutes = static_cast<int>(totalDuration) / 60;
+    double seconds = totalDuration - minutes * 60;
+    SetColor(15);
+    std::cout << "[ MIDI Information ]" << std::endl;
+    SetColor(11);
+    std::cout << "  Playing MIDI: " << filePath << "\n"
+        << "  Total Notes: " << totalNotes << "\n"
+        << "  Duration: " << minutes << "m "
+        << std::fixed << std::setprecision(2) << seconds << "s\n";
+    for (const auto& event : allEvents) {
+        if (event->isNoteOn()) totalNotes++;
+    }
 
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -188,8 +203,6 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
     }
     loadCv.notify_one();
 
-    SetColor(10);
-    std::cout << "[+] Playing MIDI: " << filePath << std::endl;
 
     auto playbackStart = std::chrono::steady_clock::now();
     std::chrono::duration<double> pauseDuration = std::chrono::duration<double>::zero();
@@ -204,9 +217,13 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             int notes = globalNoteCount.exchange(0);
             double cpTime = currentPlaybackTime.load();
-            double progressPercent = (totalDuration > 0.0) ? (cpTime / totalDuration * 100.0) : 0.0;
+            double progressPercent = (cpTime / totalDuration) * 100.0;
+
             wchar_t title[256];
-            swprintf_s(title, 256, L"Progress: %.2f%% | NPS: %d", progressPercent, notes);
+            swprintf_s(title, 256,
+                L"Progress: %.2f%% | NPS: %d | BPM: %.1f",
+                progressPercent, notes, currentBpm.load()
+            );
             SetConsoleTitleW(title);
         }
         });
@@ -256,8 +273,8 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
         */
 
         if (event->isMeta() && (*event)[0] == 0x51) {
-            int microsecondsPerQuarter = ((*event)[3] << 16) | ((*event)[4] << 8) | (*event)[5];
-            double newBpm = 60000000.0 / microsecondsPerQuarter;
+            int mpq = ((*event)[3] << 16) | ((*event)[4] << 8) | (*event)[5];
+            currentBpm.store(60000000.0 / mpq);
         }
 
         if (event->isNoteOn()) {
@@ -354,7 +371,7 @@ int main() {
             std::cout << "[+] Version information fetched successfully!" << std::endl;
 
             SetColor(15);
-            std::cout << "\n[ Version Infomation ]" << std::endl;
+            std::cout << "\n[ Version Information ]" << std::endl;
             SetColor(11);
             std::cout << "  Program Version: " << localVersion << std::endl;
             std::cout << "  Legacy Version: " << remoteVersion << std::endl;
@@ -423,10 +440,10 @@ int main() {
             {
                 std::unique_lock<std::mutex> lock(mtx);
                 loadCv.wait(lock, [] { return isMidiLoaded.load(); });
-            }
             
-            SetColor(11);
-            std::cout << "\nCommands (pause/resume/stop): ";
+                SetColor(11);
+                std::cout << "\nCommands (pause/resume/stop): ";
+            }
 
             while (!isPlaybackFinished.load()) {
                 if (_kbhit()) {
