@@ -186,16 +186,16 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
     int totalNotes = 0;
     int minutes = static_cast<int>(totalDuration) / 60;
     double seconds = totalDuration - minutes * 60;
+    for (const auto& event : allEvents) {
+        if (event->isNoteOn()) totalNotes++;
+    }
     SetColor(15);
-    std::cout << "[ MIDI Information ]" << std::endl;
+    std::cout << "\n[ MIDI Information ]" << std::endl;
     SetColor(11);
     std::cout << "  Playing MIDI: " << filePath << "\n"
         << "  Total Notes: " << totalNotes << "\n"
         << "  Duration: " << minutes << "m "
         << std::fixed << std::setprecision(2) << seconds << "s\n";
-    for (const auto& event : allEvents) {
-        if (event->isNoteOn()) totalNotes++;
-    }
 
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -441,9 +441,10 @@ int main() {
                 std::unique_lock<std::mutex> lock(mtx);
                 loadCv.wait(lock, [] { return isMidiLoaded.load(); });
             
-                SetColor(11);
-                std::cout << "\nCommands (pause/resume/stop): ";
             }
+                
+            SetColor(11);
+            std::cout << "\nCommands (pause/resume/stop): ";
 
             while (!isPlaybackFinished.load()) {
                 if (_kbhit()) {
@@ -493,7 +494,7 @@ int main() {
             std::getline(std::cin, answer);
             if (answer != "y" && answer != "Y") {
                 SetColor(15);
-                std::cout << "Press Enter to exit..." << std::endl;
+                std::cout << "Press Enter to exit...";
                 std::cin.get();
                 break;
             }
