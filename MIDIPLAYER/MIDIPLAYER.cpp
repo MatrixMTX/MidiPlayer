@@ -5,14 +5,22 @@
 #include <thread>
 #include <chrono>
 #include <string>
+#include <fstream>
+#include <sstream>
 #include <algorithm>
 #include <atomic>
+#include <stdexcept>
+#include <cctype>
+#include <regex>
+#include <array>
 #include <condition_variable>
-#include <windows.h>
 #include <cstdio>
 #include <conio.h>
 #include "RtMidi.h"
 #include "MidiFile.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 using namespace smf;
 
@@ -30,6 +38,56 @@ void SetColor(WORD color) {
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     SetConsoleTextAttribute(hConsole, color);
 }
+
+std::string cleanVersionString(const std::string& version) {
+    std::string cleaned = version;
+    cleaned.erase(std::remove_if(cleaned.begin(), cleaned.end(), [](unsigned char c) {
+        return !(std::isdigit(c) || c == '.');
+        }), cleaned.end());
+    return cleaned;
+}
+
+std::string execCommand(const std::string& cmd) {
+    std::array<char, 128> buffer;
+    std::string result;
+    FILE* pipe = _popen(cmd.c_str(), "r");
+    if (!pipe) {
+        throw std::runtime_error("[!] popen() Failure");
+    }
+    while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
+        result += buffer.data();
+    }
+    _pclose(pipe);
+    return result;
+}
+
+#ifdef _WIN32
+// Function to check a specific registry key to determine if Visual C++ Redistributable is installed.
+bool isVCRedistInstalled(const std::wstring& subKey) {
+    HKEY hKey;
+    LONG lRes = RegOpenKeyExW(HKEY_LOCAL_MACHINE, subKey.c_str(), 0, KEY_READ | KEY_WOW64_64KEY, &hKey);
+    if (lRes != ERROR_SUCCESS) {
+        lRes = RegOpenKeyExW(HKEY_LOCAL_MACHINE, subKey.c_str(), 0, KEY_READ | KEY_WOW64_32KEY, &hKey);
+    }
+    if (lRes == ERROR_SUCCESS) {
+        DWORD installed = 0;
+        DWORD size = sizeof(installed);
+        LONG lRes2 = RegQueryValueExW(hKey, L"Installed", NULL, NULL, reinterpret_cast<LPBYTE>(&installed), &size);
+        RegCloseKey(hKey);
+        if (lRes2 == ERROR_SUCCESS && installed == 1)
+            return true;
+    }
+    return false;
+}
+
+// Check if Visual C++ 2015 Redistributable (x86 or x64) is installed
+bool isVisualCppRedistributableInstalled() {
+    bool installed_x86 = isVCRedistInstalled(L"SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x86");
+    bool installed_x64 = isVCRedistInstalled(L"SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64");
+    return installed_x86 || installed_x64;
+}
+#endif
+
 
 typedef NTSTATUS(NTAPI* RtlGetVersionPtr)(POSVERSIONINFOEXW);
 
@@ -231,8 +289,84 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
 int main() {
     try {
         if (IsWindows10OrGreater()) {
-            SetColor(14);
-            std::cout << "[*] Loading Midi Player" << std::endl;
+            SetColor(6);
+            std::cout << "[*] Checking dependencies...\n" << std::endl;
+            if (isVisualCppRedistributableInstalled()) {
+                SetColor(10);
+                std::cout << "[+] Visual C++ Redistributable already installed" << std::endl;
+            }
+            else {
+                SetColor(12);
+                std::cout << "[!] Visual C++ Redistributable is not installed" << std::endl;
+            }
+            SetColor(6);
+            std::string localFilePath = "VERSION";
+            std::string remoteUrl = "https://raw.githubusercontent.com/MatrixMTX/MidiPlayer/refs/heads/main/MIDIPLAYER/VERSION";
+            std::cout << "[*] Fetching version information..." << std::endl;
+            std::ifstream localFile(localFilePath);
+            if (!localFile) {
+                SetColor(12);
+                std::cerr << "[!] Failed to Check Version" << std::endl;
+                SetColor(15);
+                std::cout << "Press Enter to exit..." << std::endl;
+                std::cin.get();
+                return 0;
+            }
+            std::stringstream localBuffer;
+            localBuffer << localFile.rdbuf();
+            std::string localVer = localBuffer.str();
+            std::string localVersion = cleanVersionString(localVer);
+            if (localVersion.empty()) {
+                SetColor(12);
+                std::cerr << "[!] Could not find version information in local file." << std::endl;
+                SetColor(15);
+            }
+            std::string command = "powershell -Command (Invoke-WebRequest -Uri '" + remoteUrl + "').Content";
+            std::string remoteVer;
+            try {
+                remoteVer = execCommand(command);
+            }
+            catch (const std::exception& ex) {
+                SetColor(12);
+                std::cerr << "[!] Command execution error: " << ex.what() << std::endl;
+                SetColor(15);
+                std::cout << "Press Enter to exit..." << std::endl;
+                std::cin.get();
+                return 1;
+            }
+            if (remoteVer.empty()) {
+                SetColor(12);
+                std::cerr << "[!] Failed to retrieve remote file contents: " << remoteUrl << std::endl;
+                SetColor(15);
+                std::cout << "Press Enter to exit..." << std::endl;
+                std::cin.get();
+                return 1;
+            }
+            std::string remoteVersion = cleanVersionString(remoteVer);
+            if (remoteVersion.empty()) {
+                SetColor(12);
+                std::cerr << "[!] Could not find version information on remote file." << std::endl;
+                SetColor(15);
+                std::cout << "Press Enter to exit..." << std::endl;
+                std::cin.get();
+                return 1;
+            }
+            std::cout << "[+] Version information fetched successfully!" << std::endl;
+
+            SetColor(15);
+            std::cout << "\n[ Version Infomation ]" << std::endl;
+            SetColor(11);
+            std::cout << "  Program Version: " << localVersion << std::endl;
+            std::cout << "  Legacy Version: " << remoteVersion << std::endl;
+
+            if (localVersion == remoteVersion) {
+                SetColor(6);
+                std::cout << "\n[!] The current file version is the latest." << std::endl;
+            }
+            else {
+                SetColor(6);
+                std::cout << "\n[!] The current file version is not up to date." << std::endl;
+            }
         }
         else {
             SetColor(12);
@@ -256,8 +390,9 @@ int main() {
             std::cout << i << ": " << midiOut.getPortName(i) << "\n";
         }
 
+        SetColor(11);
         int portNumber;
-        std::cout << "Select a MIDI port: ";
+        std::cout << "\nSelect a MIDI port: ";
         std::cin >> portNumber;
         std::cin.ignore();
 
