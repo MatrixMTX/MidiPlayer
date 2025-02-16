@@ -30,6 +30,8 @@ std::atomic<bool> isPaused(false);
 std::atomic<bool> isStopped(false);
 std::atomic<bool> isMidiLoaded(false);
 std::atomic<bool> isPlaybackFinished(false);
+std::atomic<int> globalTranspose(0);
+std::atomic<double> globalVolumeFactor(1.0);
 std::condition_variable cv;
 std::condition_variable loadCv;
 std::mutex mtx;
@@ -89,7 +91,6 @@ bool isVisualCppRedistributableInstalled() {
     return installed_x86 || installed_x64;
 }
 #endif
-
 
 typedef NTSTATUS(NTAPI* RtlGetVersionPtr)(POSVERSIONINFOEXW);
 
@@ -203,7 +204,6 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
     }
     loadCv.notify_one();
 
-
     auto playbackStart = std::chrono::steady_clock::now();
     std::chrono::duration<double> pauseDuration = std::chrono::duration<double>::zero();
     std::chrono::steady_clock::time_point pauseStart{};
@@ -259,41 +259,43 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
         // Update playback time (for title update)
         currentPlaybackTime.store(eventTime);
 
-        // [Existing title update code - commented out as it doesn't update every second]
-        /*
-        if (totalDuration > 0.0) {
-            double progressPercent = (event->seconds / totalDuration) * 100.0;
-            double nps = (eventTime - lastEventTime > 0) ? noteCount / (eventTime - lastEventTime) : 0.0;
-            wchar_t title[256];
-            swprintf_s(title, 256, L\"Progress: %.2f%% | NPS: %.2f\", progressPercent, nps);
-            SetConsoleTitleW(title);
-            lastEventTime = eventTime;
-            noteCount = 0;
-        }
-        */
-
         if (event->isMeta() && (*event)[0] == 0x51) {
             int mpq = ((*event)[3] << 16) | ((*event)[4] << 8) | (*event)[5];
             currentBpm.store(60000000.0 / mpq);
         }
 
         if (event->isNoteOn()) {
-            noteCount++;    
-            globalNoteCount++;   
+            noteCount++;
+            globalNoteCount++;
         }
 
         if (event->isNoteOn() || event->isNoteOff()) {
+            // Apply global transpose and volume factor
+            unsigned char status = (*event)[0];
+            int note = (*event)[1];
+            int velocity = (*event)[2];
+
+            note += globalTranspose.load();
+            if (note < 0) note = 0;
+            if (note > 127) note = 127;
+
+            if (event->isNoteOn()) {
+                velocity = static_cast<int>(velocity * globalVolumeFactor.load());
+                if (velocity > 127) velocity = 127;
+                if (velocity < 0) velocity = 0;
+            }
+
             std::vector<unsigned char> message = {
-                static_cast<unsigned char>((*event)[0]),
-                static_cast<unsigned char>((*event)[1]),
-                static_cast<unsigned char>((*event)[2])
+                static_cast<unsigned char>(status),
+                static_cast<unsigned char>(note),
+                static_cast<unsigned char>(velocity)
             };
             midiOut.sendMessage(&message);
         }
     }
 
     SetColor(13);
-    std::cout << "[*] MIDI playback finished.\n";
+    std::cout << "\n[*] MIDI playback finished.";
     isPlaybackFinished = true;
     cv.notify_all();
 
@@ -301,7 +303,6 @@ void playMidiFile(const std::string& filePath, RtMidiOut& midiOut) {
         titleUpdater.join();
     }
 }
-
 
 int main() {
     try {
@@ -440,11 +441,10 @@ int main() {
             {
                 std::unique_lock<std::mutex> lock(mtx);
                 loadCv.wait(lock, [] { return isMidiLoaded.load(); });
-            
             }
-                
+
             SetColor(11);
-            std::cout << "\nCommands (pause/resume/stop): ";
+            std::cout << "\nCommands (pause/resume/stop/transpose [value]/volume [value]): ";
 
             while (!isPlaybackFinished.load()) {
                 if (_kbhit()) {
@@ -456,7 +456,7 @@ int main() {
                         SetColor(10);
                         std::cout << "[*] Paused\n";
                         SetColor(11);
-                        std::cout << "Commands (pause/resume/stop): ";
+                        std::cout << "Commands (pause/resume/stop/transpose [value]/volume [value]): ";
                     }
                     else if (command == "resume") {
                         isPaused = false;
@@ -464,7 +464,7 @@ int main() {
                         SetColor(10);
                         std::cout << "[*] Resumed\n";
                         SetColor(11);
-                        std::cout << "Commands (pause/resume/stop): ";
+                        std::cout << "Commands (pause/resume/stop/transpose [value]/volume [value]): ";
                     }
                     else if (command == "stop") {
                         isStopped = true;
@@ -472,14 +472,36 @@ int main() {
                         SetColor(10);
                         std::cout << "[*] Stopping playback...\n";
                         SetColor(11);
-                        std::cout << "Commands (pause/resume/stop): ";
+                        std::cout << "Commands (pause/resume/stop/transpose [value]/volume [value]): ";
                         break;
+                    }
+                    else if (command.find("transpose") == 0) {
+                        std::istringstream iss(command);
+                        std::string cmd;
+                        int tVal;
+                        iss >> cmd >> tVal;
+                        globalTranspose = tVal;
+                        SetColor(10);
+                        std::cout << "[*] Transpose set to " << tVal << "\n";
+                        SetColor(11);
+                        std::cout << "Commands (pause/resume/stop/transpose [value]/volume [value]): ";
+                    }
+                    else if (command.find("volume") == 0) {
+                        std::istringstream iss(command);
+                        std::string cmd;
+                        double vol;
+                        iss >> cmd >> vol;
+                        globalVolumeFactor = vol;
+                        SetColor(10);
+                        std::cout << "[*] Volume factor set to " << vol << "\n";
+                        SetColor(11);
+                        std::cout << "Commands (pause/resume/stop/transpose [value]/volume [value]): ";
                     }
                     else {
                         SetColor(12);
-                        std::cout << "[!] Invalid command. Use [pause/resume/stop]\n";
+                        std::cout << "[!] Invalid command. Use [pause/resume/stop/transpose [value]/volume [value]]\n";
                         SetColor(11);
-                        std::cout << "Commands (pause/resume/stop): ";
+                        std::cout << "Commands (pause/resume/stop/transpose [value]/volume [value]): ";
                     }
                 }
                 else {
@@ -489,10 +511,20 @@ int main() {
 
             playbackThread.join();
             SetColor(13);
-            std::cout << "\n[*] Would you like to play another MIDI file? (y/n): ";
             std::string answer;
+
+            std::cout << "\n[*] Would you like to play another MIDI file? [y/n] (Default: No): ";
             std::getline(std::cin, answer);
-            if (answer != "y" && answer != "Y") {
+
+            if (answer == "y" || answer == "Y" || answer == "yes" || answer == "Yes" || answer == "YES") {
+            }
+            else if (answer == "n" || answer == "N") {
+                SetColor(15);
+                std::cout << "Press Enter to exit...";
+                std::cin.get();
+                break;
+            }
+            else {
                 SetColor(15);
                 std::cout << "Press Enter to exit...";
                 std::cin.get();
